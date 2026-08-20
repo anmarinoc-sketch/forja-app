@@ -338,9 +338,9 @@ const state = {
   activeTab:'log',
   logDay:'1', logExercise: DEFAULT_ROUTINE['1'].exercises[0].name,
   logWeight:'', logUnit:'kg', logReps:10, logSetType:'Normal', logRPE:'',
-  progressExercise:null, displayUnit:'kg',
+  progressExercise:null, displayUnit:'kg', progressView:'exercise',
   bwWeight:'', bwUnit:'kg',
-  nutritionText:'', nutritionCalories:'', nutritionDayType:'',
+  nutritionText:'', nutritionCalories:'', nutritionProtein:'', nutritionDayType:'',
   goalType:'maintenance', goalIntensity:'moderado', maintenanceCals:'',
   calMonth: (()=>{ const d=new Date(); d.setDate(1); return d; })(),
   calSelected:null,
@@ -486,6 +486,31 @@ function weeklyVolumeByMuscle(){
   });
   return totals;
 }
+function estimate1RMKg(weightKg, reps){
+  if(!weightKg || !reps) return 0;
+  if(reps<=1) return weightKg;
+  return weightKg * (1 + reps/30); // fórmula de Epley
+}
+function current1RM(exercise){
+  const rel = state.sets.filter(s=>s.exercise===exercise);
+  if(!rel.length) return null;
+  return Math.max(...rel.map(s=>estimate1RMKg(s.weightKg, s.reps)));
+}
+function weeklyTotalVolumeSeries(weeksBack){
+  weeksBack = weeksBack || 10;
+  const today = new Date();
+  const labels = [], values = [];
+  for(let i=weeksBack-1; i>=0; i--){
+    const end = new Date(today); end.setDate(end.getDate() - i*7);
+    const start = new Date(end); start.setDate(start.getDate()-6);
+    const startS = ymdFromDate(start), endS = ymdFromDate(end);
+    const vol = state.sets.filter(s=>s.date>=startS && s.date<=endS)
+      .reduce((a,s)=>a+fromKg(s.weightKg,state.displayUnit)*s.reps,0);
+    labels.push(start.getDate()+'/'+(start.getMonth()+1));
+    values.push(Math.round(vol));
+  }
+  return {labels, values};
+}
 
 /* ============ NUTRICIÓN: META Y ANÁLISIS ============ */
 const INTENSITY_FACTORS = {
@@ -543,6 +568,67 @@ function getNutritionRecommendation(){
     return {text:'Vas en superávit de forma consistente (~'+diff+' kcal por encima de mantenimiento). Bien.'};
   }
   return {text: diff>0 ? 'Estás comiendo por encima de tu mantenimiento (~'+diff+' kcal de más en promedio).' : 'Estás comiendo por debajo de tu mantenimiento (~'+Math.abs(diff)+' kcal de menos en promedio).'};
+}
+
+/* ============ PROTEÍNA ============ */
+function lastBodyWeightKg(){
+  if(!state.bodyWeights.length) return null;
+  const sorted = [...state.bodyWeights].sort((a,b)=>b.ts-a.ts);
+  return sorted[0].weightKg;
+}
+function proteinTargetGrams(){
+  const bw = lastBodyWeightKg();
+  if(!bw) return null;
+  return Math.round(bw*1.8); // punto medio del rango 1.6–2.2 g/kg para entrenamiento de fuerza
+}
+function dailyProteinTotals(){
+  const totals = {};
+  state.nutrition.forEach(n=>{ if(n.protein){ totals[n.date] = (totals[n.date]||0)+n.protein; } });
+  return totals;
+}
+function proteinWeeklyStats(){
+  const target = proteinTargetGrams();
+  const totals = dailyProteinTotals();
+  const dates = Object.keys(totals).sort();
+  if(!dates.length) return {target, avg:null, diff:null};
+  const last = dates.slice(-7);
+  const avg = last.reduce((a,d)=>a+totals[d],0)/last.length;
+  const diff = target!==null ? Math.round(avg-target) : null;
+  return {target, avg: Math.round(avg), diff};
+}
+
+/* ============ PESO CORPORAL VS. META (cruce nutrición ↔ progreso) ============ */
+function bodyweightGoalInsight(){
+  if(!computeTargetCals()) return {text:'Configura tu meta nutricional en la pestaña Nutrición para comparar tu peso corporal contra tu objetivo.', status:'nodata'};
+  const sorted = [...state.bodyWeights].sort((a,b)=>a.ts-b.ts);
+  if(sorted.length<2) return {text:'Registra tu peso corporal al menos dos veces (con unos días de diferencia) para ver si va en línea con tu meta.', status:'nodata'};
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate()-21);
+  const cutoffS = ymdFromDate(cutoff);
+  const windowed = sorted.filter(b=>b.date>=cutoffS);
+  const usable = windowed.length>=2 ? windowed : sorted;
+  const first = usable[0], last = usable[usable.length-1];
+  const days = Math.max(1, diffDays(first.date, last.date));
+  const deltaKg = last.weightKg - first.weightKg;
+  const deltaDisplay = fromKg(Math.abs(deltaKg), state.bwUnit);
+  const dir = deltaKg > 0.3 ? 'up' : (deltaKg < -0.3 ? 'down' : 'flat');
+
+  const goal = state.goalType;
+  const aligned =
+    (goal==='deficit' && dir==='down') ||
+    (goal==='surplus' && dir==='up') ||
+    (goal==='maintenance' && dir==='flat');
+
+  const deltaTxt = fmt(deltaDisplay)+' '+state.bwUnit+' en '+days+' días';
+  if(aligned){
+    return {text:'Tu peso '+(dir==='flat'?'se ha mantenido estable':(dir==='down'?'bajó '+deltaTxt:'subió '+deltaTxt))+' — va en línea con tu meta de '+GOAL_LABELS[goal].toLowerCase()+'.', status:'ok'};
+  }
+  if(goal==='deficit'){
+    return {text: dir==='up' ? 'Tu peso subió '+deltaTxt+' pese a estar en déficit. Tu estimado de mantenimiento probablemente está muy bajo — considera subirlo en Nutrición.' : 'Tu peso no ha bajado ('+ (dir==='flat'?'se mantuvo estable':'') +') en '+days+' días pese al déficit. Revisa tu estimado de mantenimiento.', status:'warn'};
+  }
+  if(goal==='surplus'){
+    return {text: dir==='down' ? 'Tu peso bajó '+deltaTxt+' pese a estar en superávit. Tu estimado de mantenimiento probablemente está muy alto — considera bajarlo en Nutrición.' : 'Tu peso no ha subido en '+days+' días pese al superávit. Revisa tu estimado de mantenimiento.', status:'warn'};
+  }
+  return {text:'Tu peso se movió '+deltaTxt+' pese a buscar mantenimiento. Revisa tu estimado de calorías en Nutrición.', status:'warn'};
 }
 
 /* ============ PLATE VISUALIZER ============ */
@@ -693,15 +779,26 @@ function deleteSet(id){
 }
 
 /* ============ RENDER: PROGRESS TAB ============ */
+function progressViewToggle(){
+  return '<div class="row" style="margin-bottom:14px">'+
+    '<button class="btn '+(state.progressView==='exercise'?'btn-primary':'btn-ghost')+'" style="flex:1" onclick="setProgressView(\'exercise\')">Por ejercicio</button>'+
+    '<button class="btn '+(state.progressView==='total'?'btn-primary':'btn-ghost')+'" style="flex:1" onclick="setProgressView(\'total\')">Total</button>'+
+  '</div>';
+}
+function setProgressView(v){ state.progressView=v; renderApp(); }
+
 function renderProgressTab(){
   const mot = getMotivation();
+  if(state.progressView==='total') return '<div class="banner"><b>'+mot.title+'.</b> '+mot.text+'</div>'+progressViewToggle()+renderProgressTotalView();
+
   const all = allExercisesFlat();
-  if(!state.progressExercise) state.progressExercise = all[0].name;
+  if(!all.length) return '<div class="banner"><b>'+mot.title+'.</b> '+mot.text+'</div>'+progressViewToggle()+'<div class="empty-state">Agrega ejercicios a tu rutina para poder ver su progreso.</div>';
+  if(!state.progressExercise || !all.find(e=>e.name===state.progressExercise)) state.progressExercise = all[0].name;
   const exOptions = all.map(e=>'<option value="'+e.name.replace(/"/g,'&quot;')+'"'+(state.progressExercise===e.name?' selected':'')+'>'+e.name+'</option>').join('');
 
   const pr = getPR(state.progressExercise);
+  const rm = current1RM(state.progressExercise);
   const vol = totalVolumeKg(state.progressExercise);
-  const streak = computeStreak();
   const rec = getRecommendation(state.progressExercise);
 
   const rel = state.sets.filter(s=>s.exercise===state.progressExercise);
@@ -709,6 +806,7 @@ function renderProgressTab(){
 
   return ''+
   '<div class="banner"><b>'+mot.title+'.</b> '+mot.text+'</div>'+
+  progressViewToggle()+
   '<div class="section-title">Progreso por ejercicio</div>'+
   '<div class="card">'+
     '<div class="row">'+
@@ -719,16 +817,36 @@ function renderProgressTab(){
   '</div>'+
   '<div class="stat-grid">'+
     '<div class="stat-card"><div class="stat-val">'+(pr!==null? fmt(fromKg(pr,state.displayUnit)) : '—')+'</div><div class="stat-lbl">PR ('+state.displayUnit+')</div></div>'+
+    '<div class="stat-card"><div class="stat-val">'+(rm!==null? fmt(fromKg(rm,state.displayUnit)) : '—')+'</div><div class="stat-lbl">1RM est. ('+state.displayUnit+')</div></div>'+
     '<div class="stat-card"><div class="stat-val">'+(vol>0? Math.round(fromKg(vol,state.displayUnit)).toLocaleString('es') : '—')+'</div><div class="stat-lbl">Volumen total</div></div>'+
-    '<div class="stat-card"><div class="stat-val">'+streak+'</div><div class="stat-lbl">Racha (días)</div></div>'+
   '</div>'+
-  '<div class="recommend-box"><b>Recomendación.</b><br/>'+rec.text+'</div>'+
-  '<div class="section-title">Volumen semanal por grupo muscular</div>'+
-  '<div class="card"><div class="chart-wrap small"><canvas id="muscleChart"></canvas></div></div>';
+  '<div class="recommend-box"><b>Recomendación.</b><br/>'+rec.text+'</div>';
 }
+
+function renderProgressTotalView(){
+  const streak = computeStreak();
+  const bwInsight = bodyweightGoalInsight();
+  const bwStatusColor = bwInsight.status==='ok' ? 'var(--success)' : (bwInsight.status==='warn' ? 'var(--warning)' : 'var(--steel)');
+
+  return ''+
+  '<div class="stat-grid">'+
+    '<div class="stat-card"><div class="stat-val">'+streak+'</div><div class="stat-lbl">Racha (días)</div></div>'+
+    '<div class="stat-card"><div class="stat-val">'+state.sets.length+'</div><div class="stat-lbl">Series totales</div></div>'+
+    '<div class="stat-card"><div class="stat-val">'+new Set(state.sets.map(s=>s.exercise)).size+'</div><div class="stat-lbl">Ejercicios activos</div></div>'+
+  '</div>'+
+  '<div class="section-title">Volumen semanal total</div>'+
+  '<div class="card"><div class="chart-wrap small"><canvas id="totalVolumeChart"></canvas></div></div>'+
+  '<div class="section-title">Balance muscular (últimos 7 días)</div>'+
+  '<div class="card"><div class="chart-wrap small"><canvas id="muscleChart"></canvas></div></div>'+
+  '<div class="section-title">Peso corporal vs. tu meta</div>'+
+  (state.bodyWeights.length>1 ? '<div class="card"><div class="chart-wrap small"><canvas id="bwChart"></canvas></div></div>' : '')+
+  '<div class="recommend-box" style="border-left-color:'+bwStatusColor+'"><b style="color:'+bwStatusColor+'">Cruce peso ↔ meta.</b><br/>'+bwInsight.text+'</div>';
+}
+
 function initProgressCharts(){
   if(charts.progress){ charts.progress.destroy(); charts.progress=null; }
   if(charts.muscle){ charts.muscle.destroy(); charts.muscle=null; }
+  if(charts.totalVolume){ charts.totalVolume.destroy(); charts.totalVolume=null; }
   Chart.defaults.color = '#93909A';
   Chart.defaults.font.family = "'Inter', sans-serif";
 
@@ -759,6 +877,16 @@ function initProgressCharts(){
     });
   }
 
+  const tvCanvas = document.getElementById('totalVolumeChart');
+  if(tvCanvas){
+    const {labels, values} = weeklyTotalVolumeSeries(10);
+    charts.totalVolume = new Chart(tvCanvas.getContext('2d'), {
+      type:'line',
+      data:{ labels, datasets:[{ data: values, borderColor:'#5B8A9A', backgroundColor:'rgba(91,138,154,0.15)', fill:true, tension:0.3, pointRadius:3 }] },
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{grid:{color:'#2A292F'}}, y:{grid:{color:'#2A292F'}}} }
+    });
+  }
+
   const mCanvas = document.getElementById('muscleChart');
   if(mCanvas){
     const totals = weeklyVolumeByMuscle();
@@ -776,6 +904,8 @@ function initProgressCharts(){
     });
     if(!labels.length){ mCanvas.parentElement.innerHTML = '<div class="empty-state">Registra series esta semana para ver el volumen por grupo muscular.</div>'; }
   }
+
+  if(state.progressView==='total') initBodyweightChart();
 }
 
 /* ============ RENDER: NUTRITION TAB ============ */
@@ -808,6 +938,7 @@ function renderNutritionTab(){
   const nuList = sortedNu.length ? sortedNu.slice(0,10).map(n=>{
     const metaParts = [];
     if(n.calories) metaParts.push(n.calories+' kcal');
+    if(n.protein) metaParts.push(n.protein+' g proteína');
     return '<div class="session-item"><div class="session-main"><span class="ex">'+relativeDate(n.date)+'</span>'+dayTypeChip(n.dayType)+
       (n.text ? '<div class="session-meta">'+n.text.replace(/</g,'&lt;')+'</div>' : '')+
       (metaParts.length ? '<div class="session-meta">'+metaParts.join(' · ')+'</div>' : '')+
@@ -815,8 +946,11 @@ function renderNutritionTab(){
   }).join('') : '<div class="empty-state">Sin registros de alimentación aún.</div>';
 
   const hasCalData = Object.keys(dailyCalorieTotals()).length>0;
+  const hasProteinData = Object.keys(dailyProteinTotals()).length>0;
   const stats = nutritionWeeklyStats();
+  const pStats = proteinWeeklyStats();
   const rec = getNutritionRecommendation();
+  const proteinTarget = proteinTargetGrams();
 
   return ''+
   '<div class="section-title">Peso corporal <span class="chip" style="margin-left:6px">opcional</span></div>'+
@@ -854,14 +988,16 @@ function renderNutritionTab(){
     '<div class="field"><label>¿Qué comiste hoy? (opcional)</label><textarea placeholder="Ej: desayuno huevos y avena, almuerzo pollo con arroz y ensalada..." oninput="state.nutritionText=this.value">'+state.nutritionText+'</textarea></div>'+
     '<div class="row">'+
       '<div class="field"><label>Calorías totales (opcional)</label><input type="number" inputmode="numeric" step="10" min="0" placeholder="Ej: 2100" value="'+state.nutritionCalories+'" oninput="state.nutritionCalories=this.value"/></div>'+
-      '<div class="field"><label>Tipo de día (opcional)</label><select onchange="state.nutritionDayType=this.value">'+
-        '<option value=""'+(state.nutritionDayType===''?' selected':'')+'>— Auto —</option>'+
-        '<option value="deficit"'+(state.nutritionDayType==='deficit'?' selected':'')+'>Déficit</option>'+
-        '<option value="maintenance"'+(state.nutritionDayType==='maintenance'?' selected':'')+'>Mantenimiento</option>'+
-        '<option value="surplus"'+(state.nutritionDayType==='surplus'?' selected':'')+'>Superávit</option>'+
-      '</select></div>'+
+      '<div class="field"><label>Proteína en gramos (opcional)</label><input type="number" inputmode="numeric" step="5" min="0" placeholder="Ej: 150" value="'+state.nutritionProtein+'" oninput="state.nutritionProtein=this.value"/></div>'+
     '</div>'+
-    '<div class="hint" style="margin:-4px 0 12px">Deja "Auto" para que se calcule solo con tu meta, o elígelo tú mismo si no vas a contar calorías.</div>'+
+    (proteinTarget ? '<div class="hint" style="margin:-4px 0 12px">Meta sugerida de proteína: ~'+proteinTarget+' g/día (según tu último peso registrado).</div>' : '<div class="hint" style="margin:-4px 0 12px">Registra tu peso corporal arriba para ver una meta de proteína sugerida.</div>')+
+    '<div class="field"><label>Tipo de día (opcional)</label><select onchange="state.nutritionDayType=this.value">'+
+      '<option value=""'+(state.nutritionDayType===''?' selected':'')+'>— Auto —</option>'+
+      '<option value="deficit"'+(state.nutritionDayType==='deficit'?' selected':'')+'>Déficit</option>'+
+      '<option value="maintenance"'+(state.nutritionDayType==='maintenance'?' selected':'')+'>Mantenimiento</option>'+
+      '<option value="surplus"'+(state.nutritionDayType==='surplus'?' selected':'')+'>Superávit</option>'+
+    '</select></div>'+
+    '<div class="hint" style="margin:6px 0 12px">Deja "Auto" para que se calcule solo con tu meta, o elígelo tú mismo si no vas a contar calorías.</div>'+
     '<button class="btn btn-ghost" onclick="addNutrition()">Guardar registro de hoy</button>'+
     '<br/><br/>'+nuList+
   '</div>'+
@@ -875,6 +1011,14 @@ function renderNutritionTab(){
     '</div>'+
     '<div class="card"><div class="chart-wrap small"><canvas id="nutritionChart"></canvas></div></div>'+
     '<div class="recommend-box">'+rec.text+'</div>'
+  : '')+
+  (hasProteinData ? ''+
+    '<div class="section-title">Seguimiento de proteína</div>'+
+    '<div class="stat-grid">'+
+      '<div class="stat-card"><div class="stat-val">'+(pStats.target ?? '—')+'</div><div class="stat-lbl">Meta (g)</div></div>'+
+      '<div class="stat-card"><div class="stat-val">'+(pStats.avg ?? '—')+'</div><div class="stat-lbl">Promedio 7 días</div></div>'+
+      '<div class="stat-card"><div class="stat-val">'+(pStats.diff!==null ? (pStats.diff>0?'+':'')+pStats.diff : '—')+'</div><div class="stat-lbl">Diferencia (g)</div></div>'+
+    '</div>'
   : '');
 }
 function addBodyWeight(){
@@ -888,11 +1032,12 @@ function deleteBodyWeight(id){ state.bodyWeights = state.bodyWeights.filter(b=>b
 function addNutrition(){
   const text = state.nutritionText.trim();
   const cals = parseFloat(state.nutritionCalories) || null;
-  if(!text && !cals){ alert('Escribe qué comiste o ingresa las calorías del día antes de guardar.'); return; }
+  const protein = parseFloat(state.nutritionProtein) || null;
+  if(!text && !cals && !protein){ alert('Escribe qué comiste, o ingresa calorías o proteína del día antes de guardar.'); return; }
   let dayType = state.nutritionDayType || null;
   if(!dayType && cals) dayType = dayTypeFromCals(cals);
-  state.nutrition.push({id:uid(), ts:Date.now(), date:todayStr(), text:text, calories:cals, dayType:dayType});
-  state.nutritionText=''; state.nutritionCalories=''; state.nutritionDayType='';
+  state.nutrition.push({id:uid(), ts:Date.now(), date:todayStr(), text:text, calories:cals, protein:protein, dayType:dayType});
+  state.nutritionText=''; state.nutritionCalories=''; state.nutritionProtein=''; state.nutritionDayType='';
   saveData(); renderApp();
 }
 function deleteNutrition(id){ state.nutrition = state.nutrition.filter(n=>n.id!==id); saveData(); renderApp(); }
