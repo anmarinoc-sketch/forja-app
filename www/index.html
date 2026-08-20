@@ -10,6 +10,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="FORJA">
 <script src="vendor/chart.umd.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
@@ -1240,8 +1241,43 @@ function renderHistoryTab(){
     '</div>'+
     '<input type="file" id="importFileInput" accept="application/json,.json" style="display:none" onchange="handleImportFile(this)">'+
   '</div>'+
+  '<div class="section-title">Exportar a Excel</div>'+
+  '<div class="card">'+
+    '<div class="hint">Un archivo .xlsx con tus series, peso corporal y alimentación en hojas separadas, para revisar o graficar en Excel. Este archivo es solo de consulta — no sirve para restaurar datos en la app, para eso usa el respaldo de arriba.</div><br/>'+
+    '<button class="btn btn-ghost" onclick="exportExcel()">📊 Exportar a Excel</button>'+
+  '</div>'+
   '<div class="hint" style="margin:18px 0 6px">Consejo: agrega esta página a tu pantalla de inicio para usarla como una app.</div>'+
   '<button class="btn btn-danger" onclick="resetAllData()">Borrar todos los datos</button>';
+}
+function exportExcel(){
+  if(typeof XLSX==='undefined'){ alert('No se pudo cargar el generador de Excel. Revisa tu conexión e intenta de nuevo.'); return; }
+  const setsRows = [...state.sets].sort((a,b)=>a.ts-b.ts).map(s=>({
+    Fecha: s.date,
+    Día: (state.routine[s.day]?.label || s.day),
+    Ejercicio: s.exercise,
+    'Grupo muscular': s.muscle,
+    'Peso (kg)': Math.round(s.weightKg*100)/100,
+    Repeticiones: s.reps,
+    'Tipo de serie': s.setType,
+    RPE: s.rpe || '',
+  }));
+  const bwRows = [...state.bodyWeights].sort((a,b)=>a.ts-b.ts).map(b=>({
+    Fecha: b.date,
+    'Peso (kg)': Math.round(b.weightKg*100)/100,
+  }));
+  const nuRows = [...state.nutrition].sort((a,b)=>a.ts-b.ts).map(n=>({
+    Fecha: n.date,
+    'Qué comió': n.text || '',
+    'Calorías (kcal)': n.calories || '',
+    'Proteína (g)': n.protein || '',
+    'Tipo de día': n.dayType ? GOAL_LABELS[n.dayType] : '',
+  }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(setsRows.length?setsRows:[{Fecha:'Sin registros'}]), 'Series');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(bwRows.length?bwRows:[{Fecha:'Sin registros'}]), 'Peso corporal');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(nuRows.length?nuRows:[{Fecha:'Sin registros'}]), 'Nutrición');
+  XLSX.writeFile(wb, 'forja-datos-'+todayStr()+'.xlsx');
 }
 function exportBackup(){
   const data = { sets: state.sets, bodyWeights: state.bodyWeights, nutrition: state.nutrition, goalType:state.goalType, goalIntensity:state.goalIntensity, maintenanceCals:state.maintenanceCals, routine:state.routine, theme:state.theme, exportedAt: new Date().toISOString(), app:'FORJA' };
