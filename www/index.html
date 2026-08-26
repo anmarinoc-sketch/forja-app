@@ -189,6 +189,32 @@ input[type=number]{font-family:var(--font-mono);font-size:20px;font-weight:600;}
 }
 .del-btn{background:none;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;padding:4px 8px;}
 .del-btn:active{color:#C97867;}
+.session-actions{display:flex;align-items:center;flex-shrink:0;}
+.edit-btn{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px 6px;line-height:0;}
+.edit-btn svg{width:16px;height:16px;}
+.edit-btn:active{color:var(--ember);}
+.session-item.editing{background:var(--surface-2);border-radius:6px;padding-left:8px;padding-right:4px;}
+
+/* ---------- Selector de modo de carga (peso / peso corporal) ---------- */
+.seg{display:flex;gap:6px;margin-bottom:12px;}
+.seg button{
+  flex:1;padding:9px 6px;font-family:var(--font-body);font-size:12.5px;font-weight:600;
+  background:var(--surface-2);color:var(--text-muted);border:1px solid var(--border);
+  border-radius:8px;cursor:pointer;
+}
+.seg button.on{background:var(--ember);color:#fff;border-color:var(--ember);}
+.bw-box{
+  background:var(--surface-2);border:1px solid var(--border);border-radius:8px;
+  padding:10px 12px;margin-bottom:12px;
+}
+.bw-total{font-family:var(--font-mono);font-size:15px;color:var(--text);}
+.bw-total b{color:var(--ember);}
+.link-btn{background:none;border:none;color:var(--steel);font:inherit;cursor:pointer;padding:0;text-decoration:underline;}
+.edit-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:rgba(232,98,63,0.12);border:1px solid var(--ember-dim);
+  border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;
+}
 
 /* ---------- Stats grid ---------- */
 .stat-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px;}
@@ -309,6 +335,9 @@ const DEFAULT_ROUTINE = {
   ]},
 };
 const SET_TYPES = ['Normal','Calentamiento','Al fallo','Descendente'];
+/* Ejercicios que por defecto se hacen con el propio peso. La lista se ajusta sola:
+   registrar una serie en un modo u otro marca o desmarca el ejercicio. */
+const BW_EXERCISES_DEFAULT = ['Dominada pronada en barra','Fondos en paralelas'];
 const RPE_OPTIONS = ['6','6.5','7','7.5','8','8.5','9','9.5','10'];
 
 function exToMuscleMap(){
@@ -339,6 +368,8 @@ const state = {
   activeTab:'log',
   logDay:'1', logExercise: DEFAULT_ROUTINE['1'].exercises[0].name,
   logWeight:'', logUnit:'kg', logReps:10, logSetType:'Normal', logRPE:'',
+  logBW:false, logExtra:'', editingId:null,
+  bwExercises: BW_EXERCISES_DEFAULT.slice(),
   progressExercise:null, displayUnit:'kg', progressView:'exercise',
   bwWeight:'', bwUnit:'kg',
   nutritionText:'', nutritionCalories:'', nutritionProtein:'', nutritionDayType:'',
@@ -399,6 +430,7 @@ async function loadData(){
       if(p.maintenanceCals) state.maintenanceCals = p.maintenanceCals;
       if(p.routine) state.routine = p.routine;
       if(p.theme) state.theme = p.theme;
+      if(Array.isArray(p.bwExercises)) state.bwExercises = p.bwExercises;
     }
   }catch(e){ /* sin datos previos todavía */ }
   document.body.classList.toggle('light', state.theme==='light');
@@ -411,7 +443,7 @@ function saveData(){
     const payload = {
       sets:state.sets, bodyWeights:state.bodyWeights, nutrition:state.nutrition,
       goalType:state.goalType, goalIntensity:state.goalIntensity, maintenanceCals:state.maintenanceCals,
-      routine:state.routine, theme:state.theme,
+      routine:state.routine, theme:state.theme, bwExercises:state.bwExercises,
     };
     const ok = await storageSetRaw('forja-data', JSON.stringify(payload));
     if(!ok) console.error('No se pudo guardar');
@@ -700,6 +732,37 @@ function toggleTheme(){
   renderApp();
 }
 
+/* ============ SERIES: PESO CORPORAL Y PINTADO ============ */
+const ICON_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
+
+function isBWEx(name){ return state.bwExercises.indexOf(name) !== -1; }
+function markBWEx(name, on){
+  const i = state.bwExercises.indexOf(name);
+  if(on && i===-1) state.bwExercises.push(name);
+  if(!on && i!==-1) state.bwExercises.splice(i,1);
+}
+/* Texto de la carga de una serie. Las series de peso corporal se guardan con el peso
+   del día congelado, así que el histórico no cambia aunque después cambie su peso. */
+function setLoadText(s, unit){
+  const total = fmt(fromKg(s.weightKg, unit))+' '+unit;
+  if(!s.bw) return total;
+  if(s.extraKg > 0) return total+' (corporal + '+fmt(fromKg(s.extraKg,unit))+' de lastre)';
+  if(s.extraKg < 0) return total+' (corporal − '+fmt(fromKg(-s.extraKg,unit))+' de asistencia)';
+  return total+' (peso corporal)';
+}
+function setActions(s){
+  return '<div class="session-actions">'+
+    '<button class="edit-btn" onclick="startEditSet(\''+s.id+'\')" title="Editar serie">'+ICON_EDIT+'</button>'+
+    '<button class="del-btn" onclick="deleteSet(\''+s.id+'\')" title="Eliminar serie">×</button></div>';
+}
+function setItemHtml(s, unit){
+  const editing = state.editingId===s.id ? ' editing' : '';
+  return '<div class="session-item'+editing+'"><div class="session-main"><span class="ex">'+s.exercise+'</span><span class="chip">'+s.setType+'</span>'+
+    (s.bw?'<span class="chip">Peso corporal</span>':'')+
+    '<div class="session-meta">'+setLoadText(s,unit)+' × '+s.reps+' reps'+(s.rpe?' · RPE '+s.rpe:'')+'</div></div>'+
+    setActions(s)+'</div>';
+}
+
 /* ============ RENDER: LOG TAB ============ */
 function renderLogTab(){
   const mot = getMotivation();
@@ -711,70 +774,189 @@ function renderLogTab(){
     return '<div class="banner"><b>'+mot.title+'.</b> '+mot.text+'</div>'+
       '<div class="empty-state">Este día de rutina no tiene ejercicios todavía. Ve a la pestaña Rutina para agregar alguno.</div>';
   }
-  if(!exList.find(e=>e.name===state.logExercise)) state.logExercise = exList[0].name;
-  const exOptions = exList.map(e=>'<option value="'+e.name.replace(/"/g,'&quot;')+'"'+(state.logExercise===e.name?' selected':'')+'>'+e.name+'</option>').join('');
+  /* Al editar una serie de un ejercicio que ya se borró de la rutina, se añade como
+     opción suelta para no cambiarlo en silencio por otro. */
+  const faltante = !exList.find(e=>e.name===state.logExercise);
+  if(faltante && !state.editingId) state.logExercise = exList[0].name;
+  const exOptions = (faltante && state.editingId ? '<option selected>'+state.logExercise+'</option>' : '')+
+    exList.map(e=>'<option value="'+e.name.replace(/"/g,'&quot;')+'"'+(state.logExercise===e.name?' selected':'')+'>'+e.name+'</option>').join('');
   const last = getLastSet(state.logExercise);
-  const lastText = last ? 'Última vez ('+relativeDate(last.date)+'): <b>'+fmt(fromKg(last.weightKg,state.logUnit))+' '+state.logUnit+' × '+last.reps+'</b>' : 'Aún no tienes registros de este ejercicio.';
+  const lastText = last ? 'Última vez ('+relativeDate(last.date)+'): <b>'+setLoadText(last,state.logUnit)+' × '+last.reps+'</b>' : 'Aún no tienes registros de este ejercicio.';
   const setTypeOptions = SET_TYPES.map(t=>'<option'+(state.logSetType===t?' selected':'')+'>'+t+'</option>').join('');
   const rpeOptions = '<option value=""'+(state.logRPE===''?' selected':'')+'>—</option>'+RPE_OPTIONS.map(r=>'<option value="'+r+'"'+(state.logRPE===r?' selected':'')+'>'+r+'</option>').join('');
 
   const todaySets = state.sets.filter(s=>s.date===todayStr()).sort((a,b)=>a.ts-b.ts);
-  const sessionHtml = todaySets.length ? todaySets.map(s=>
-    '<div class="session-item"><div class="session-main"><span class="ex">'+s.exercise+'</span><span class="chip">'+s.setType+'</span>'+
-    '<div class="session-meta">'+fmt(fromKg(s.weightKg,state.logUnit))+' '+state.logUnit+' × '+s.reps+' reps'+(s.rpe?' · RPE '+s.rpe:'')+'</div></div>'+
-    '<button class="del-btn" onclick="deleteSet(\''+s.id+'\')">×</button></div>'
-  ).join('') : '<div class="empty-state">Todavía no registras series hoy. ¡Empieza abajo!</div>';
+  const sessionHtml = todaySets.length ? todaySets.map(s=>setItemHtml(s, state.logUnit)).join('')
+    : '<div class="empty-state">Todavía no registras series hoy. ¡Empieza abajo!</div>';
+
+  const editando = state.editingId ? state.sets.find(s=>s.id===state.editingId) : null;
+  const editBar = editando ?
+    '<div class="edit-bar"><span>Editando una serie'+(editando.date!==todayStr()?' del '+editando.date:'')+'. Cambia lo que necesites y guarda.</span>'+
+    '<button class="link-btn" onclick="cancelEdit()">Cancelar</button></div>' : '';
 
   return ''+
-  '<div class="banner"><b>'+mot.title+'.</b> '+mot.text+'</div>'+
-  '<div class="section-title">Nueva serie</div>'+
+  (editando ? '' : '<div class="banner"><b>'+mot.title+'.</b> '+mot.text+'</div>')+
+  '<div class="section-title" id="formTop">'+(editando?'Editar serie':'Nueva serie')+'</div>'+
   '<div class="card">'+
+    editBar+
     '<div class="field"><label>Rutina del día</label><select onchange="onDayChange(this.value)">'+dayOptions+'</select></div>'+
     '<div class="field"><label>Ejercicio</label><select id="exerciseSelect" onchange="onExerciseChange(this.value)">'+exOptions+'</select></div>'+
     '<div class="hint" id="lastRef">'+lastText+'</div><br/>'+
-    '<div class="row">'+
-      '<div class="field"><label>Peso levantado</label><input id="weightInput" type="number" inputmode="decimal" step="0.5" min="0" placeholder="0" value="'+state.logWeight+'" oninput="onWeightInput(this.value)"/></div>'+
-      '<div class="field" style="max-width:110px"><label>Unidad</label><select onchange="onUnitChange(this.value)"><option value="kg"'+(state.logUnit==='kg'?' selected':'')+'>kg</option><option value="lb"'+(state.logUnit==='lb'?' selected':'')+'>lb</option></select></div>'+
+    '<div class="seg">'+
+      '<button class="'+(state.logBW?'':'on')+'" onclick="setLoadMode(false)">Con peso</button>'+
+      '<button class="'+(state.logBW?'on':'')+'" onclick="setLoadMode(true)">Peso corporal</button>'+
     '</div>'+
-    '<div id="plateBox">'+renderPlateViz(state.logWeight, state.logUnit)+'</div><br/>'+
+    (state.logBW ? renderBWFields() : renderWeightFields())+
     '<div class="row">'+
       '<div class="field"><label>Repeticiones</label><div class="stepper"><button onclick="changeReps(-1)">−</button><span class="val" id="repsVal">'+state.logReps+'</span><button onclick="changeReps(1)">+</button></div></div>'+
       '<div class="field"><label>Tipo de serie</label><select onchange="state.logSetType=this.value">'+setTypeOptions+'</select></div>'+
     '</div>'+
     '<div class="field"><label>RPE (esfuerzo percibido, opcional)</label><select onchange="state.logRPE=this.value">'+rpeOptions+'</select></div>'+
-    '<button class="btn btn-primary" onclick="addSet()">+ Agregar serie</button>'+
+    (editando
+      ? '<button class="btn btn-primary" onclick="saveEditSet()">Guardar cambios</button>'+
+        '<br/><br/><button class="btn btn-ghost" onclick="cancelEdit()">Cancelar</button>'
+      : '<button class="btn btn-primary" onclick="addSet()">+ Agregar serie</button>')+
   '</div>'+
   '<div class="section-title">Sesión de hoy</div>'+
   '<div class="card">'+sessionHtml+'</div>';
 }
-function onDayChange(v){ state.logDay=v; state.logExercise=(state.routine[v].exercises[0]||{}).name||''; renderApp(); }
-function onExerciseChange(v){ state.logExercise=v; updateLogPreview(); }
-function onUnitChange(v){ state.logUnit=v; updateLogPreview(); }
-function onWeightInput(v){ state.logWeight=v; document.getElementById('plateBox').innerHTML = renderPlateViz(state.logWeight, state.logUnit); }
+function renderWeightFields(){
+  return '<div class="row">'+
+      '<div class="field"><label>Peso levantado</label><input id="weightInput" type="number" inputmode="decimal" step="0.5" min="0" placeholder="0" value="'+state.logWeight+'" oninput="onWeightInput(this.value)"/></div>'+
+      '<div class="field" style="max-width:110px"><label>Unidad</label><select onchange="onUnitChange(this.value)"><option value="kg"'+(state.logUnit==='kg'?' selected':'')+'>kg</option><option value="lb"'+(state.logUnit==='lb'?' selected':'')+'>lb</option></select></div>'+
+    '</div>'+
+    '<div id="plateBox">'+renderPlateViz(state.logWeight, state.logUnit)+'</div><br/>';
+}
+/* Modo peso corporal: la carga sale del último peso registrado en Nutrición, más un
+   lastre opcional (o asistencia, en negativo). */
+function renderBWFields(){
+  const bwKg = lastBodyWeightKg();
+  if(bwKg===null){
+    return '<div class="bw-box">Para registrar series con tu propio peso, primero anota tu peso corporal en la pestaña Nutrición. '+
+      '<button class="link-btn" onclick="switchTab(\'nutrition\')">Ir a Nutrición</button></div>';
+  }
+  const extra = parseFloat(state.logExtra)||0;
+  const totalKg = bwKg + toKg(extra, state.logUnit);
+  return '<div class="bw-box">'+
+      '<div class="bw-total">Carga total: <b>'+fmt(fromKg(totalKg,state.logUnit))+' '+state.logUnit+'</b></div>'+
+      '<div class="hint" style="margin-top:4px">Tu peso corporal: '+fmt(fromKg(bwKg,state.logUnit))+' '+state.logUnit+' · queda guardado con la serie, así el histórico no se mueve si tu peso cambia.</div>'+
+    '</div>'+
+    '<div class="row">'+
+      '<div class="field"><label>Lastre (opcional, en negativo si es asistida)</label><input id="extraInput" type="number" inputmode="decimal" step="0.5" placeholder="0" value="'+state.logExtra+'" oninput="onExtraInput(this.value)"/></div>'+
+      '<div class="field" style="max-width:110px"><label>Unidad</label><select onchange="onUnitChange(this.value)"><option value="kg"'+(state.logUnit==='kg'?' selected':'')+'>kg</option><option value="lb"'+(state.logUnit==='lb'?' selected':'')+'>lb</option></select></div>'+
+    '</div>';
+}
+function onDayChange(v){
+  state.logDay=v;
+  state.logExercise=(state.routine[v].exercises[0]||{}).name||'';
+  state.logBW = isBWEx(state.logExercise);
+  renderApp();
+}
+function onExerciseChange(v){
+  state.logExercise=v;
+  state.logBW = isBWEx(v);
+  renderApp();
+}
+function setLoadMode(bw){ state.logBW = bw; renderApp(); }
+function onExtraInput(v){
+  state.logExtra=v;
+  const bwKg = lastBodyWeightKg();
+  if(bwKg===null) return;
+  const total = bwKg + toKg(parseFloat(v)||0, state.logUnit);
+  const el = document.querySelector('.bw-total');
+  if(el) el.innerHTML = 'Carga total: <b>'+fmt(fromKg(total,state.logUnit))+' '+state.logUnit+'</b>';
+}
+function onUnitChange(v){ state.logUnit=v; if(state.logBW){ renderApp(); } else { updateLogPreview(); } }
+function onWeightInput(v){ state.logWeight=v; const box=document.getElementById('plateBox'); if(box) box.innerHTML = renderPlateViz(state.logWeight, state.logUnit); }
 function updateLogPreview(){
   const last = getLastSet(state.logExercise);
-  const lastText = last ? 'Última vez ('+relativeDate(last.date)+'): <b>'+fmt(fromKg(last.weightKg,state.logUnit))+' '+state.logUnit+' × '+last.reps+'</b>' : 'Aún no tienes registros de este ejercicio.';
+  const lastText = last ? 'Última vez ('+relativeDate(last.date)+'): <b>'+setLoadText(last,state.logUnit)+' × '+last.reps+'</b>' : 'Aún no tienes registros de este ejercicio.';
   const refEl = document.getElementById('lastRef'); if(refEl) refEl.innerHTML = lastText;
   const box = document.getElementById('plateBox'); if(box) box.innerHTML = renderPlateViz(state.logWeight, state.logUnit);
 }
 function changeReps(d){ state.logReps = Math.max(1, Math.min(30, state.logReps+d)); const el=document.getElementById('repsVal'); if(el) el.textContent = state.logReps; }
-function addSet(){
+/* Campos de carga comunes a agregar y a editar. Devuelve null si algo falta.
+   `bodyKgPrevio` conserva el peso corporal ya guardado al editar una serie. */
+function loadFieldsFromForm(bodyKgPrevio){
+  if(state.logBW){
+    const bwKg = (bodyKgPrevio!=null && bodyKgPrevio!==undefined) ? bodyKgPrevio : lastBodyWeightKg();
+    if(bwKg===null){
+      alert('Primero registra tu peso corporal en la pestaña Nutrición para poder guardar series con tu propio peso.');
+      return null;
+    }
+    const extraKg = toKg(parseFloat(state.logExtra)||0, state.logUnit);
+    if(bwKg + extraKg <= 0){ alert('La asistencia no puede ser mayor que tu peso corporal.'); return null; }
+    return { bw:true, bodyKg:bwKg, extraKg:extraKg, weightKg: bwKg + extraKg };
+  }
   const w = parseFloat(state.logWeight);
-  if(!w || w<=0){ alert('Ingresa un peso válido para registrar la serie.'); return; }
-  const s = {
+  if(!w || w<=0){ alert('Ingresa un peso válido para registrar la serie.'); return null; }
+  return { bw:false, bodyKg:null, extraKg:0, weightKg: toKg(w, state.logUnit) };
+}
+function addSet(){
+  const carga = loadFieldsFromForm();
+  if(!carga) return;
+  state.sets.push(Object.assign({
     id:uid(), ts:Date.now(), date:todayStr(), day:state.logDay,
     exercise:state.logExercise, muscle:exToMuscleMap()[state.logExercise]||'Otro',
-    weightKg: toKg(w, state.logUnit), reps: state.logReps, setType: state.logSetType,
-    rpe: state.logRPE || null,
-  };
-  state.sets.push(s);
+    reps: state.logReps, setType: state.logSetType, rpe: state.logRPE || null,
+  }, carga));
+  markBWEx(state.logExercise, state.logBW);
   state.logWeight='';
+  state.logExtra='';
   saveData();
+  renderApp();
+}
+/* Editar: se abre el mismo formulario con los datos de la serie cargados. */
+function startEditSet(id){
+  const s = state.sets.find(x=>x.id===id);
+  if(!s) return;
+  state.editingId = id;
+  state.logDay = state.routine[s.day] ? s.day : Object.keys(state.routine)[0];
+  state.logExercise = s.exercise;
+  state.logReps = s.reps;
+  state.logSetType = s.setType;
+  state.logRPE = s.rpe || '';
+  state.logBW = !!s.bw;
+  if(s.bw){
+    state.logExtra = s.extraKg ? fmt(fromKg(s.extraKg, state.logUnit)) : '';
+    state.logWeight = '';
+  }else{
+    state.logWeight = fmt(fromKg(s.weightKg, state.logUnit));
+    state.logExtra = '';
+  }
+  state.activeTab = 'log';
+  renderApp();
+  const top = document.getElementById('formTop');
+  if(top) top.scrollIntoView({behavior:'smooth', block:'start'});
+}
+function saveEditSet(){
+  const s = state.sets.find(x=>x.id===state.editingId);
+  if(!s){ cancelEdit(); return; }
+  const carga = loadFieldsFromForm(s.bw ? s.bodyKg : null);
+  if(!carga) return;
+  Object.assign(s, carga, {
+    day: state.logDay,
+    exercise: state.logExercise,
+    muscle: exToMuscleMap()[state.logExercise] || 'Otro',
+    reps: state.logReps,
+    setType: state.logSetType,
+    rpe: state.logRPE || null,
+  });
+  markBWEx(state.logExercise, state.logBW);
+  cancelEdit();
+  saveData();
+}
+function cancelEdit(){
+  state.editingId = null;
+  state.logWeight = '';
+  state.logExtra = '';
+  state.logBW = isBWEx(state.logExercise);
   renderApp();
 }
 function deleteSet(id){
   if(!confirm('¿Eliminar esta serie?')) return;
   state.sets = state.sets.filter(s=>s.id!==id);
+  if(state.editingId===id) state.editingId = null;
   saveData();
   renderApp();
 }
@@ -1194,10 +1376,8 @@ function selectCalDay(ds){
 }
 function renderCalendarSelectedDay(){
   const sets = state.sets.filter(s=>s.date===state.calSelected).sort((a,b)=>a.ts-b.ts);
-  const items = sets.length ? sets.map(s=>
-    '<div class="session-item"><div class="session-main"><span class="ex">'+s.exercise+'</span><span class="chip">'+s.setType+'</span>'+
-    '<div class="session-meta">'+fmt(fromKg(s.weightKg,state.displayUnit))+' '+state.displayUnit+' × '+s.reps+' reps</div></div></div>'
-  ).join('') : '<div class="empty-state">Sin series registradas ese día.</div>';
+  const items = sets.length ? sets.map(s=>setItemHtml(s, state.displayUnit)).join('')
+    : '<div class="empty-state">Sin series registradas ese día.</div>';
   return '<div class="card"><div class="hint" style="margin-bottom:8px"><b>'+state.calSelected+'</b></div>'+items+'</div>';
 }
 
@@ -1212,11 +1392,7 @@ function renderHistoryTab(){
   const dates = Object.keys(byDate).sort().reverse();
 
   const historyHtml = dates.length ? dates.map(d=>{
-    const items = byDate[d].sort((a,b)=>a.ts-b.ts).map(s=>
-      '<div class="session-item"><div class="session-main"><span class="ex">'+s.exercise+'</span><span class="chip">'+s.setType+'</span>'+
-      '<div class="session-meta">'+fmt(fromKg(s.weightKg,state.displayUnit))+' '+state.displayUnit+' × '+s.reps+' reps'+(s.rpe?' · RPE '+s.rpe:'')+'</div></div>'+
-      '<button class="del-btn" onclick="deleteSet(\''+s.id+'\')">×</button></div>'
-    ).join('');
+    const items = byDate[d].sort((a,b)=>a.ts-b.ts).map(s=>setItemHtml(s, state.displayUnit)).join('');
     return '<div class="history-day"><div class="history-day-label">'+d+' · '+(state.routine[byDate[d][0].day]?.label || ('Día '+byDate[d][0].day))+'</div><div class="card">'+items+'</div></div>';
   }).join('') : '<div class="empty-state">Aún no hay sesiones registradas.</div>';
 
@@ -1260,6 +1436,8 @@ function exportExcel(){
     Repeticiones: s.reps,
     'Tipo de serie': s.setType,
     RPE: s.rpe || '',
+    'Peso corporal': s.bw ? 'Sí' : '',
+    'Lastre (kg)': s.bw && s.extraKg ? Math.round(s.extraKg*100)/100 : '',
   }));
   const bwRows = [...state.bodyWeights].sort((a,b)=>a.ts-b.ts).map(b=>({
     Fecha: b.date,
