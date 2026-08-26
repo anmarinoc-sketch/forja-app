@@ -5,6 +5,9 @@ on:
     branches: [ main, master ]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -35,8 +38,24 @@ jobs:
       - name: Compilar APK (debug, instalable directamente)
         run: cd android && ./gradlew assembleDebug --no-daemon
 
+      - name: Ponerle nombre propio al archivo
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk forja.apk
+
       - name: Subir el APK como resultado descargable
         uses: actions/upload-artifact@v4
         with:
           name: forja-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: forja.apk
+
+      # Deja el APK en un enlace fijo y sin necesidad de iniciar sesión, para
+      # poder descargarlo directo desde el celular:
+      # https://github.com/anmarinoc-sketch/forja-app/releases/download/ultimo/forja.apk
+      - name: Publicar el APK como descarga directa
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ultimo
+          name: FORJA · última versión
+          body: |
+            APK de la última versión de FORJA, compilado automáticamente.
+            Descarga `forja.apk` aquí abajo e instálalo en tu Android.
+          files: forja.apk
