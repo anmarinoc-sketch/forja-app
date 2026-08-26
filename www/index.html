@@ -210,6 +210,19 @@ input[type=number]{font-family:var(--font-mono);font-size:20px;font-weight:600;}
 .bw-total{font-family:var(--font-mono);font-size:15px;color:var(--text);}
 .bw-total b{color:var(--ember);}
 .link-btn{background:none;border:none;color:var(--steel);font:inherit;cursor:pointer;padding:0;text-decoration:underline;}
+/* ---------- Fecha del registro ---------- */
+.date-quick{display:flex;gap:6px;margin-top:8px;}
+.date-quick button{
+  flex:1;padding:6px 4px;font-family:var(--font-body);font-size:12px;font-weight:600;
+  background:var(--surface-2);color:var(--text-muted);border:1px solid var(--border);
+  border-radius:6px;cursor:pointer;
+}
+.date-quick button.on{background:var(--steel);color:#fff;border-color:var(--steel);}
+.date-warn{
+  background:rgba(91,138,154,0.14);border:1px solid var(--steel-dim);border-radius:8px;
+  padding:9px 12px;margin-bottom:12px;font-size:12.5px;color:var(--text);
+}
+.date-warn b{font-family:var(--font-mono);}
 .edit-bar{
   display:flex;align-items:center;justify-content:space-between;gap:10px;
   background:rgba(232,98,63,0.12);border:1px solid var(--ember-dim);
@@ -368,7 +381,7 @@ const state = {
   activeTab:'log',
   logDay:'1', logExercise: DEFAULT_ROUTINE['1'].exercises[0].name,
   logWeight:'', logUnit:'kg', logReps:10, logSetType:'Normal', logRPE:'',
-  logBW:false, logExtra:'', editingId:null,
+  logBW:false, logExtra:'', editingId:null, logDate:null, logDatePrev:null,
   bwExercises: BW_EXERCISES_DEFAULT.slice(),
   progressExercise:null, displayUnit:'kg', progressView:'exercise',
   bwWeight:'', bwUnit:'kg',
@@ -396,6 +409,18 @@ function relativeDate(s){
   return 'hace '+diff+' días';
 }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+function addDays(ds, n){ const d=dateFromStr(ds); d.setDate(d.getDate()+n); return todayStrOf(d); }
+function todayStrOf(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+/* La fecha en la que se registra puede no ser hoy. `ts` ordena el histórico (última
+   vez, récords), así que tiene que caer dentro del día elegido, no en el momento de
+   teclearlo; se le pone la hora actual para conservar el orden entre series. */
+function tsForDate(ds){
+  if(ds===todayStr()) return Date.now();
+  const ahora = new Date();
+  const horaDelDia = ahora.getHours()*3600000 + ahora.getMinutes()*60000 + ahora.getSeconds()*1000 + ahora.getMilliseconds();
+  return dateFromStr(ds).getTime() + horaDelDia;
+}
+function logDate(){ return state.logDate || todayStr(); }
 function hexToRgb(h){ const n=parseInt(h.slice(1),16); return {r:(n>>16)&255,g:(n>>8)&255,b:n&255}; }
 function interpColor(h1,h2,t){ const c1=hexToRgb(h1),c2=hexToRgb(h2); const r=Math.round(c1.r+(c2.r-c1.r)*t),g=Math.round(c1.g+(c2.g-c1.g)*t),b=Math.round(c1.b+(c2.b-c1.b)*t); return 'rgb('+r+','+g+','+b+')'; }
 
@@ -785,13 +810,15 @@ function renderLogTab(){
   const setTypeOptions = SET_TYPES.map(t=>'<option'+(state.logSetType===t?' selected':'')+'>'+t+'</option>').join('');
   const rpeOptions = '<option value=""'+(state.logRPE===''?' selected':'')+'>—</option>'+RPE_OPTIONS.map(r=>'<option value="'+r+'"'+(state.logRPE===r?' selected':'')+'>'+r+'</option>').join('');
 
-  const todaySets = state.sets.filter(s=>s.date===todayStr()).sort((a,b)=>a.ts-b.ts);
-  const sessionHtml = todaySets.length ? todaySets.map(s=>setItemHtml(s, state.logUnit)).join('')
-    : '<div class="empty-state">Todavía no registras series hoy. ¡Empieza abajo!</div>';
+  const fecha = logDate();
+  const esHoy = fecha===todayStr();
+  const daySets = state.sets.filter(s=>s.date===fecha).sort((a,b)=>a.ts-b.ts);
+  const sessionHtml = daySets.length ? daySets.map(s=>setItemHtml(s, state.logUnit)).join('')
+    : '<div class="empty-state">'+(esHoy?'Todavía no registras series hoy. ¡Empieza abajo!':'Sin series registradas ese día. Las que agregues arriba quedarán en esa fecha.')+'</div>';
 
   const editando = state.editingId ? state.sets.find(s=>s.id===state.editingId) : null;
   const editBar = editando ?
-    '<div class="edit-bar"><span>Editando una serie'+(editando.date!==todayStr()?' del '+editando.date:'')+'. Cambia lo que necesites y guarda.</span>'+
+    '<div class="edit-bar"><span>Editando una serie'+(editando.date!==todayStr()?' del '+editando.date:'')+'. Puedes cambiar hasta la fecha.</span>'+
     '<button class="link-btn" onclick="cancelEdit()">Cancelar</button></div>' : '';
 
   return ''+
@@ -799,6 +826,15 @@ function renderLogTab(){
   '<div class="section-title" id="formTop">'+(editando?'Editar serie':'Nueva serie')+'</div>'+
   '<div class="card">'+
     editBar+
+    '<div class="field"><label>Fecha</label>'+
+      '<input type="date" id="dateInput" value="'+fecha+'" max="'+todayStr()+'" onchange="onDateChange(this.value)"/>'+
+      '<div class="date-quick">'+
+        '<button class="'+(esHoy?'on':'')+'" onclick="onDateChange(\''+todayStr()+'\')">Hoy</button>'+
+        '<button class="'+(fecha===addDays(todayStr(),-1)?'on':'')+'" onclick="onDateChange(\''+addDays(todayStr(),-1)+'\')">Ayer</button>'+
+        '<button class="'+(fecha===addDays(todayStr(),-2)?'on':'')+'" onclick="onDateChange(\''+addDays(todayStr(),-2)+'\')">Antier</button>'+
+      '</div>'+
+    '</div>'+
+    (esHoy || editando ? '' : '<div class="date-warn">Estás registrando en el <b>'+fecha+'</b> ('+relativeDate(fecha)+'), no en hoy.</div>')+
     '<div class="field"><label>Rutina del día</label><select onchange="onDayChange(this.value)">'+dayOptions+'</select></div>'+
     '<div class="field"><label>Ejercicio</label><select id="exerciseSelect" onchange="onExerciseChange(this.value)">'+exOptions+'</select></div>'+
     '<div class="hint" id="lastRef">'+lastText+'</div><br/>'+
@@ -817,7 +853,7 @@ function renderLogTab(){
         '<br/><br/><button class="btn btn-ghost" onclick="cancelEdit()">Cancelar</button>'
       : '<button class="btn btn-primary" onclick="addSet()">+ Agregar serie</button>')+
   '</div>'+
-  '<div class="section-title">Sesión de hoy</div>'+
+  '<div class="section-title">'+(esHoy?'Sesión de hoy':'Sesión del '+fecha)+'</div>'+
   '<div class="card">'+sessionHtml+'</div>';
 }
 function renderWeightFields(){
@@ -858,6 +894,11 @@ function onExerciseChange(v){
   renderApp();
 }
 function setLoadMode(bw){ state.logBW = bw; renderApp(); }
+function onDateChange(v){
+  if(!v) return;
+  state.logDate = v > todayStr() ? todayStr() : v;   /* no se registra en el futuro */
+  renderApp();
+}
 function onExtraInput(v){
   state.logExtra=v;
   const bwKg = lastBodyWeightKg();
@@ -895,8 +936,9 @@ function loadFieldsFromForm(bodyKgPrevio){
 function addSet(){
   const carga = loadFieldsFromForm();
   if(!carga) return;
+  const fecha = logDate();
   state.sets.push(Object.assign({
-    id:uid(), ts:Date.now(), date:todayStr(), day:state.logDay,
+    id:uid(), ts:tsForDate(fecha), date:fecha, day:state.logDay,
     exercise:state.logExercise, muscle:exToMuscleMap()[state.logExercise]||'Otro',
     reps: state.logReps, setType: state.logSetType, rpe: state.logRPE || null,
   }, carga));
@@ -911,6 +953,8 @@ function startEditSet(id){
   const s = state.sets.find(x=>x.id===id);
   if(!s) return;
   state.editingId = id;
+  state.logDatePrev = state.logDate;   /* al salir de la edición se vuelve a la fecha en la que se estaba registrando */
+  state.logDate = s.date;
   state.logDay = state.routine[s.day] ? s.day : Object.keys(state.routine)[0];
   state.logExercise = s.exercise;
   state.logReps = s.reps;
@@ -934,7 +978,12 @@ function saveEditSet(){
   if(!s){ cancelEdit(); return; }
   const carga = loadFieldsFromForm(s.bw ? s.bodyKg : null);
   if(!carga) return;
+  const nuevaFecha = logDate();
   Object.assign(s, carga, {
+    date: nuevaFecha,
+    /* Al mover la serie de día hay que recolocar su `ts`, o el orden del histórico
+       (última vez, récords) seguiría al día viejo. */
+    ts: nuevaFecha===s.date ? s.ts : tsForDate(nuevaFecha),
     day: state.logDay,
     exercise: state.logExercise,
     muscle: exToMuscleMap()[state.logExercise] || 'Otro',
@@ -948,6 +997,8 @@ function saveEditSet(){
 }
 function cancelEdit(){
   state.editingId = null;
+  state.logDate = state.logDatePrev;
+  state.logDatePrev = null;
   state.logWeight = '';
   state.logExtra = '';
   state.logBW = isBWEx(state.logExercise);
@@ -1374,11 +1425,23 @@ function selectCalDay(ds){
   state.calSelected = state.calSelected===ds ? null : ds;
   renderApp();
 }
+/* Desde el calendario: abre el formulario ya puesto en ese día. */
+function registrarEnDia(ds){
+  state.editingId = null;
+  state.logDatePrev = null;
+  state.logDate = ds;
+  state.activeTab = 'log';
+  renderApp();
+  window.scrollTo({top:0, behavior:'smooth'});
+}
 function renderCalendarSelectedDay(){
   const sets = state.sets.filter(s=>s.date===state.calSelected).sort((a,b)=>a.ts-b.ts);
   const items = sets.length ? sets.map(s=>setItemHtml(s, state.displayUnit)).join('')
     : '<div class="empty-state">Sin series registradas ese día.</div>';
-  return '<div class="card"><div class="hint" style="margin-bottom:8px"><b>'+state.calSelected+'</b></div>'+items+'</div>';
+  const futuro = state.calSelected > todayStr();
+  return '<div class="card"><div class="hint" style="margin-bottom:8px"><b>'+state.calSelected+'</b></div>'+items+
+    (futuro ? '' : '<br/><button class="btn btn-ghost" onclick="registrarEnDia(\''+state.calSelected+'\')">+ Registrar una serie en este día</button>')+
+    '</div>';
 }
 
 /* ============ RENDER: HISTORY TAB ============ */
