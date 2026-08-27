@@ -27,10 +27,10 @@ jobs:
       - name: Descargar el código
         uses: actions/checkout@v4
 
+      # Requiere que Pages esté activado en el repositorio:
+      # Settings > Pages > Source: GitHub Actions (se hace una sola vez).
       - name: Preparar GitHub Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: Sellar la versión en el service worker
         run: sed -i "s/__VERSION__/${GITHUB_SHA::7}/" www/sw.js
