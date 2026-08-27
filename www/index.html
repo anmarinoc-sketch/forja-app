@@ -9,6 +9,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="FORJA">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <script src="vendor/chart.umd.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
 <style>
@@ -1569,6 +1571,12 @@ function resetAllData(){
 
 /* ============ INIT ============ */
 loadData();
+
+/* En la web, el service worker permite usar la app sin conexión y agregarla a la
+   pantalla de inicio. Dentro del .apk no hace falta: Capacitor ya empaqueta todo. */
+if('serviceWorker' in navigator && !window.Capacitor && location.protocol.indexOf('http')===0){
+  window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); });
+}
 
 </script>
 </body>

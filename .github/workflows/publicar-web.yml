@@ -1,0 +1,45 @@
+name: Publicar la web
+
+# Deja la app disponible en https://anmarinoc-sketch.github.io/forja-app/
+# para usarla desde cualquier celular (Android o iPhone) sin instalar nada.
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.despliegue.outputs.page_url }}
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Sellar la versión en el service worker
+        run: sed -i "s/__VERSION__/${GITHUB_SHA::7}/" www/sw.js
+
+      - name: Empaquetar la carpeta www
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: www
+
+      - name: Publicar
+        id: despliegue
+        uses: actions/deploy-pages@v4
