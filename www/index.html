@@ -231,8 +231,26 @@ input[type=date]::-webkit-date-and-time-value{text-align:left;}
   display:flex;align-items:baseline;justify-content:space-between;gap:8px;
   padding-bottom:6px;margin-bottom:2px;border-bottom:1px solid var(--border);
 }
-.ex-group-head span:first-child{font-weight:700;font-size:14px;color:var(--text);}
+.ex-group-name{font-weight:700;font-size:14px;color:var(--text);}
 .ex-group-count{font-family:var(--font-mono);font-size:11px;color:var(--text-muted);flex-shrink:0;}
+
+/* Fila plegable: un ejercicio por línea, se abre al tocarla. */
+.ex-group-head.plegable{
+  width:100%;align-items:center;gap:10px;text-align:left;cursor:pointer;
+  background:none;border:none;border-bottom:1px solid var(--border);
+  padding:10px 0;margin:0;font-family:var(--font-body);
+}
+.ex-group-head.plegable:active{background:var(--surface-2);}
+.ex-group-txt{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0;}
+.ex-group-txt .ex-group-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ex-group-sum{font-family:var(--font-mono);font-size:12.5px;color:var(--text-muted);}
+.ex-group-head.plegable .chevron{
+  flex-shrink:0;color:var(--text-muted);line-height:0;
+  transition:transform 0.18s;
+}
+.ex-group-head.plegable .chevron svg{width:16px;height:16px;}
+.ex-group-head.plegable.abierto .chevron{transform:rotate(90deg);}
+.ex-group-head.plegable.abierto{border-bottom-color:transparent;}
 .ex-group .session-item{border-bottom:none;padding:7px 0;}
 
 /* ---------- Rutina del día: qué llevas hecho ---------- */
@@ -448,7 +466,7 @@ const state = {
   logWeight:'', logUnit:'kg', logReps:10, logSetType:'Normal', logRPE:'',
   logMode:'weight', logExtra:'', editingId:null, logDate:null, logDatePrev:null,
   exModes: Object.assign({}, EX_MODES_DEFAULT),
-  dayDone:{}, exDone:{},
+  dayDone:{}, exDone:{}, openGroups:{},
   progressExercise:null, displayUnit:'kg', progressView:'exercise',
   bwWeight:'', bwUnit:'kg',
   nutritionText:'', nutritionCalories:'', nutritionProtein:'', nutritionDayType:'',
@@ -848,6 +866,7 @@ function toggleTheme(){
 }
 
 /* ============ SERIES: PESO CORPORAL Y PINTADO ============ */
+const ICON_CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
 const ICON_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>';
 
 function exMode(name){ return state.exModes[name] || 'weight'; }
@@ -879,13 +898,42 @@ function groupSetsByExercise(sets){
   });
   return orden.map(ex=>({ exercise:ex, sets:grupos[ex] }));
 }
-function groupedSetsHtml(sets, unit){
-  return groupSetsByExercise(sets).map(g=>
-    '<div class="ex-group">'+
-      '<div class="ex-group-head"><span>'+g.exercise+'</span><span class="ex-group-count">'+g.sets.length+' serie'+(g.sets.length===1?'':'s')+'</span></div>'+
-      g.sets.map((s,i)=>setItemHtml(s, unit, i+1)).join('')+
-    '</div>'
-  ).join('');
+/* Resumen de un ejercicio en una línea: si todas las series coinciden se muestra el
+   valor; si varían, el rango. Evita tener que desplegar para saber cómo fue. */
+function groupSummary(g, unit){
+  const ss = g.sets;
+  const repsMin = Math.min.apply(null, ss.map(s=>s.reps));
+  const repsMax = Math.max.apply(null, ss.map(s=>s.reps));
+  const repsTxt = (repsMin===repsMax ? repsMin : repsMin+'–'+repsMax)+' reps';
+  if(ss.every(s=>s.nw)) return 'sin peso × '+repsTxt;
+  const ws = ss.map(s=>fromKg(s.weightKg, unit));
+  const wMin = Math.min.apply(null, ws), wMax = Math.max.apply(null, ws);
+  const wTxt = (Math.abs(wMax-wMin)<0.05 ? fmt(wMin) : fmt(wMin)+'–'+fmt(wMax))+' '+unit;
+  return wTxt+' × '+repsTxt;
+}
+function toggleGroup(ex){
+  state.openGroups[ex] = !state.openGroups[ex];
+  renderApp();
+}
+/* `compacto` deja cada ejercicio en una línea que se despliega al tocarla. Se usa en
+   Registrar, donde la lista completa tapaba el formulario; el historial va desplegado. */
+function groupedSetsHtml(sets, unit, compacto){
+  return groupSetsByExercise(sets).map(g=>{
+    const abierto = !compacto || !!state.openGroups[g.exercise];
+    const n = g.sets.length;
+    const cuenta = n+' serie'+(n===1?'':'s');
+    const cabecera = compacto
+      ? '<button class="ex-group-head plegable'+(abierto?' abierto':'')+'" onclick="toggleGroup(\''+g.exercise.replace(/'/g,"\\'")+'\')">'+
+          '<span class="ex-group-txt"><span class="ex-group-name">'+g.exercise+'</span>'+
+          '<span class="ex-group-sum">'+groupSummary(g, unit)+'</span></span>'+
+          '<span class="ex-group-count">'+cuenta+'</span>'+
+          '<span class="chevron">'+ICON_CHEVRON+'</span>'+
+        '</button>'
+      : '<div class="ex-group-head"><span class="ex-group-name">'+g.exercise+'</span><span class="ex-group-count">'+cuenta+'</span></div>';
+    return '<div class="ex-group">'+cabecera+
+      (abierto ? g.sets.map((s,i)=>setItemHtml(s, unit, i+1)).join('') : '')+
+    '</div>';
+  }).join('');
 }
 function setItemHtml(s, unit, numero){
   const editing = state.editingId===s.id ? ' editing' : '';
@@ -1015,7 +1063,7 @@ function renderLogTab(){
   const fecha = logDate();
   const esHoy = fecha===todayStr();
   const daySets = state.sets.filter(s=>s.date===fecha).sort((a,b)=>a.ts-b.ts);
-  const sessionHtml = daySets.length ? groupedSetsHtml(daySets, state.logUnit)
+  const sessionHtml = daySets.length ? groupedSetsHtml(daySets, state.logUnit, true)
     : '<div class="empty-state">'+(esHoy?'Todavía no registras series hoy. ¡Empieza abajo!':'Sin series registradas ese día. Las que agregues arriba quedarán en esa fecha.')+'</div>';
 
   const editando = state.editingId ? state.sets.find(s=>s.id===state.editingId) : null;
